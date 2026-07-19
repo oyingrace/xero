@@ -21,10 +21,22 @@ const DIFFICULTY_LABEL: Record<Difficulty, string> = {
 };
 
 export default function Home() {
-  const { mode, board, status, gameId, difficulty, isBusy, error, startGame, playCell } =
-    useTicTacToeGame();
+  const {
+    mode,
+    board,
+    status,
+    difficulty,
+    gameId,
+    isSubmitted,
+    isBusy,
+    error,
+    startGame,
+    playCell,
+    submitResult,
+  } = useTicTacToeGame();
   const [selectedDifficulty, setSelectedDifficulty] = useState<Difficulty>("medium");
-  const started = gameId !== null;
+  const started = difficulty !== null;
+  const gameOver = status !== "active";
 
   return (
     <ConnectGate requireWallet={mode === "onchain"}>
@@ -39,16 +51,13 @@ export default function Home() {
         {!started ? (
           <div className="flex flex-1 flex-col items-center justify-center gap-6 text-center">
             <p className="max-w-xs text-white/70">
-              You&apos;re X, the computer is O. Pick a difficulty — only Hard is truly unbeatable;
-              Easy and Medium can be beaten.
+              You&apos;re X, the computer is O. Play the whole game free — you only sign a
+              transaction once, to save the result. Only Hard is truly unbeatable; Easy and Medium
+              can be beaten.
             </p>
             <DifficultyPicker value={selectedDifficulty} onChange={setSelectedDifficulty} />
-            <button
-              onClick={() => startGame(selectedDifficulty)}
-              disabled={isBusy}
-              className="btn-primary max-w-xs"
-            >
-              {isBusy ? "Starting…" : "Start game"}
+            <button onClick={() => startGame(selectedDifficulty)} className="btn-primary max-w-xs">
+              Start game
             </button>
           </div>
         ) : (
@@ -72,12 +81,22 @@ export default function Home() {
               )}
             </div>
 
-            <Board board={board} status={status} onPlay={playCell} disabled={isBusy} />
+            <Board board={board} status={status} onPlay={playCell} />
 
             {error && <p className="text-sm text-red-400">{error}</p>}
 
-            {status !== "active" && (
+            {gameOver && (
               <div className="flex w-full flex-col items-center gap-4">
+                {mode === "onchain" && !isSubmitted && (
+                  <button onClick={submitResult} disabled={isBusy} className="btn-primary max-w-xs">
+                    {isBusy ? "Saving on-chain…" : "Save result on-chain"}
+                  </button>
+                )}
+
+                {isSubmitted && gameId !== null && (
+                  <p className="text-sm text-x">Saved on-chain — game #{gameId.toString()}</p>
+                )}
+
                 <DifficultyPicker value={selectedDifficulty} onChange={setSelectedDifficulty} />
                 <button
                   onClick={() => startGame(selectedDifficulty)}
