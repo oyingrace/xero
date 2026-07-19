@@ -43,6 +43,7 @@ export const ticTacToeAbi = [
       { name: "player", type: "address" },
       { name: "board", type: "uint8[9]" },
       { name: "status", type: "uint8" },
+      { name: "difficulty", type: "uint8" },
     ],
   },
   {
@@ -51,6 +52,7 @@ export const ticTacToeAbi = [
     inputs: [
       { name: "gameId", type: "uint256", indexed: true },
       { name: "player", type: "address", indexed: true },
+      { name: "difficulty", type: "uint8", indexed: false },
     ],
   },
   {
