@@ -1,13 +1,13 @@
 # xero
 
-xero is tic-tac-toe against the computer, built as a [MiniPay](https://www.opera.com/products/minipay) Mini App on the [Celo](https://celo.org) blockchain. You're X, the computer is O, and every move is a real transaction. Pick a difficulty before each game — Easy and Medium can be beaten, Hard cannot (see [Difficulty](#difficulty) below).
+xero is tic-tac-toe against the computer, built as a [MiniPay](https://www.opera.com/products/minipay) Mini App on the [Celo](https://celo.org) blockchain. You're X, the computer is O — play the whole game free, then sign one transaction to save the result on-chain. Pick a difficulty before each game — Easy and Medium can be beaten, Hard cannot (see [Difficulty](#difficulty) below).
 
 ## Features
 
 - **MiniPay-native wallet** — runs inside MiniPay and uses the player's wallet automatically; a Connect Wallet fallback is available in a normal browser.
-- **On-chain gameplay** — each move is one signed transaction: the contract places your X, then immediately computes and places the computer's O reply and checks the outcome, all in the same call.
+- **One transaction per game, not per move** — the whole game plays out locally; when it ends, a single transaction submits your move list and the contract independently replays it to determine (and record) the real outcome.
 - **Three difficulties** — Easy (random), Medium (takes obvious wins/blocks, otherwise random), and Hard (exhaustive minimax — mathematically unbeatable).
-- **Demo mode** — without a deployed contract configured, the app runs the identical game engine locally, so it's fully playable during development.
+- **Demo mode** — without a deployed contract configured, the app runs the identical game engine locally with nothing to submit, so it's fully playable during development.
 
 ## Tech stack
 
@@ -37,9 +37,9 @@ Open the app inside MiniPay (or MiniPay's Site Tester) to use the wallet flow. I
 
 xero runs inside the MiniPay dapp browser, which injects an EIP-1193 provider at `window.ethereum` (`isMiniPay === true`). On load the app auto-connects that wallet and identifies the player by their Celo address — there is no sign-up step.
 
-To play, the player calls `startGame(difficulty)` on `TicTacToe.sol`, then `makeMove(gameId, cell)` for each move. The contract places the player's X, then — if the game continues — computes the computer's O reply and places it, returning the updated board and status in the same transaction. At most 5 signed transactions per game.
+Starting a game generates a random seed and plays entirely on the device — no wallet, no transaction, just the same engine `TicTacToe.sol` implements running locally. Once the game ends, one button submits everything so far: `playGame(difficulty, seed, moves)`, a single transaction containing every cell the player played. The contract independently replays the whole game from that move list — placing each X, then computing and placing each O reply itself — and only that replay determines what gets recorded. A player can't fake a result this way; the move list alone is enough for anyone, including the contract, to reproduce and verify the game.
 
-**The player pays for all of it.** There's no separate "logging" transaction and the computer never submits its own transaction — every `makeMove` call already includes the computer's reply and the final outcome, so whoever's playing (win, lose, or draw) is the one whose wallet signs and pays gas for that move, same as any other Celo transaction.
+**The player pays for that one transaction, and nothing else.** There's no per-move transaction and no separate "logging" step — the computer never submits a transaction of its own, and playing (however many moves it takes) costs nothing until the single save-the-result step at the end.
 
 This is phase 1: **free play** — games are recorded on-chain but no token changes hands. A phase 2 will add USDT staking and automatic payout once stake tiers, payout multiplier, and treasury funding are decided; see [`contracts/README.md`](./contracts/README.md) for the design notes.
 
