@@ -48,9 +48,9 @@ contract TicTacToe {
         Hard
     }
 
-    uint8 private constant EMPTY = 0;
-    uint8 private constant PLAYER = 1;
-    uint8 private constant COMPUTER = 2;
+    uint8 internal constant EMPTY = 0;
+    uint8 internal constant PLAYER = 1;
+    uint8 internal constant COMPUTER = 2;
 
     struct Game {
         address player;
@@ -122,7 +122,7 @@ contract TicTacToe {
 
     // ---- Game logic ----
 
-    function _hasWinner(uint8[9] memory board, uint8 mark) private pure returns (bool) {
+    function _hasWinner(uint8[9] memory board, uint8 mark) internal pure returns (bool) {
         return
             (board[0] == mark && board[1] == mark && board[2] == mark) ||
             (board[3] == mark && board[4] == mark && board[5] == mark) ||
@@ -134,14 +134,14 @@ contract TicTacToe {
             (board[2] == mark && board[4] == mark && board[6] == mark);
     }
 
-    function _isFull(uint8[9] memory board) private pure returns (bool) {
+    function _isFull(uint8[9] memory board) internal pure returns (bool) {
         for (uint8 i = 0; i < 9; i++) {
             if (board[i] == EMPTY) return false;
         }
         return true;
     }
 
-    function _statusOf(uint8[9] memory board) private pure returns (Status) {
+    function _statusOf(uint8[9] memory board) internal pure returns (Status) {
         if (_hasWinner(board, PLAYER)) return Status.PlayerWon;
         if (_hasWinner(board, COMPUTER)) return Status.ComputerWon;
         if (_isFull(board)) return Status.Draw;
@@ -150,7 +150,7 @@ contract TicTacToe {
 
     /// @dev Picks the computer's (O's) move for the game's chosen difficulty.
     function _bestMove(uint8[9] memory board, Difficulty difficulty, uint256 gameId, uint8 salt)
-        private
+        internal
         view
         returns (uint8)
     {
@@ -172,7 +172,7 @@ contract TicTacToe {
     }
 
     /// @dev The 8 winning lines, as cell-index triples.
-    function _lines() private pure returns (uint8[3][8] memory lines) {
+    function _lines() internal pure returns (uint8[3][8] memory lines) {
         lines[0] = [uint8(0), 1, 2];
         lines[1] = [uint8(3), 4, 5];
         lines[2] = [uint8(6), 7, 8];
@@ -184,7 +184,7 @@ contract TicTacToe {
     }
 
     /// @dev First empty cell that would complete a line for `mark`, if any.
-    function _findWinningMove(uint8[9] memory board, uint8 mark) private pure returns (bool found, uint8 cell) {
+    function _findWinningMove(uint8[9] memory board, uint8 mark) internal pure returns (bool found, uint8 cell) {
         uint8[3][8] memory lines = _lines();
         for (uint8 i = 0; i < 8; i++) {
             uint8 a = lines[i][0];
@@ -216,7 +216,7 @@ contract TicTacToe {
     }
 
     /// @dev The `seed`-th empty cell, in board order (0..8).
-    function _randomEmptyCell(uint8[9] memory board, uint256 seed) private pure returns (uint8) {
+    function _randomEmptyCell(uint8[9] memory board, uint256 seed) internal pure returns (uint8) {
         uint8 emptyCount = 0;
         for (uint8 i = 0; i < 9; i++) {
             if (board[i] == EMPTY) emptyCount++;
@@ -242,7 +242,7 @@ contract TicTacToe {
      *      `memory` arrays to internal functions by reference.
      */
     function _minimax(uint8[9] memory board, bool isComputerTurn, int8 depth, int8 alpha, int8 beta)
-        private
+        internal
         pure
         returns (int8)
     {
@@ -280,7 +280,7 @@ contract TicTacToe {
     }
 
     /// @dev Picks the computer's (O's) move against the current board via minimax.
-    function _bestMoveHard(uint8[9] memory board) private pure returns (uint8 bestCell) {
+    function _bestMoveHard(uint8[9] memory board) internal pure returns (uint8 bestCell) {
         int8 bestScore = -101;
         for (uint8 i = 0; i < 9; i++) {
             if (board[i] != EMPTY) continue;
