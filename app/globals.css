@@ -1,0 +1,18 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html,
+body {
+  background-color: #0f1410;
+  max-width: 100%;
+  overflow-x: hidden;
+}
+
+.btn-primary {
+  @apply bg-x text-board-bg font-semibold py-3 px-4 rounded-lg w-full flex items-center justify-center gap-2 transition-colors hover:bg-x-soft disabled:opacity-50 disabled:hover:bg-x;
+}
+
+.btn-secondary {
+  @apply bg-transparent text-x font-semibold py-3 px-4 rounded-lg w-full border border-x/40 flex items-center justify-center gap-2 transition-colors hover:border-x;
+}
