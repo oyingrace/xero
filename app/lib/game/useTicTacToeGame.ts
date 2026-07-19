@@ -3,12 +3,13 @@
 import { useCallback, useState } from "react";
 import { useAccount, usePublicClient, useWriteContract } from "wagmi";
 import { decodeEventLog } from "viem";
-import { ticTacToeAbi } from "@/lib/web3/ticTacToeAbi";
+import { DIFFICULTY_CODE, ticTacToeAbi } from "@/lib/web3/ticTacToeAbi";
 import { TIC_TAC_TOE_CONTRACT_ADDRESS } from "@/lib/web3/constants";
 import {
   EMPTY_BOARD,
   applyPlayerMove,
   type Board,
+  type Difficulty,
   type GameStatus,
 } from "./engine";
 
@@ -20,10 +21,11 @@ export interface TicTacToeGame {
   board: Board;
   status: GameStatus;
   gameId: bigint | null;
+  difficulty: Difficulty | null;
   /** True while a move (or game start) is being submitted/confirmed. */
   isBusy: boolean;
   error: string | null;
-  startGame: () => Promise<void>;
+  startGame: (difficulty: Difficulty) => Promise<void>;
   playCell: (cell: number) => Promise<void>;
 }
 
@@ -47,46 +49,52 @@ export function useTicTacToeGame(): TicTacToeGame {
   const [board, setBoard] = useState<Board>(EMPTY_BOARD);
   const [status, setStatus] = useState<GameStatus>("active");
   const [gameId, setGameId] = useState<bigint | null>(null);
+  const [difficulty, setDifficulty] = useState<Difficulty | null>(null);
   const [isBusy, setIsBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const startGame = useCallback(async () => {
-    setError(null);
-    setBoard(EMPTY_BOARD);
-    setStatus("active");
+  const startGame = useCallback(
+    async (chosenDifficulty: Difficulty) => {
+      setError(null);
+      setBoard(EMPTY_BOARD);
+      setStatus("active");
+      setDifficulty(chosenDifficulty);
 
-    if (mode === "demo") {
-      setGameId(BigInt(0));
-      return;
-    }
-
-    if (!TIC_TAC_TOE_CONTRACT_ADDRESS || !publicClient) return;
-    setIsBusy(true);
-    try {
-      const hash = await writeContractAsync({
-        address: TIC_TAC_TOE_CONTRACT_ADDRESS,
-        abi: ticTacToeAbi,
-        functionName: "startGame",
-      });
-      const receipt = await publicClient.waitForTransactionReceipt({ hash });
-      for (const log of receipt.logs) {
-        try {
-          const decoded = decodeEventLog({ abi: ticTacToeAbi, ...log });
-          if (decoded.eventName === "GameStarted") {
-            setGameId(decoded.args.gameId);
-            return;
-          }
-        } catch {
-          // Not a GameStarted log from this contract — skip.
-        }
+      if (mode === "demo") {
+        setGameId(BigInt(0));
+        return;
       }
-      setError("Game started, but the game id couldn't be read back.");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to start the game.");
-    } finally {
-      setIsBusy(false);
-    }
-  }, [mode, publicClient, writeContractAsync]);
+
+      if (!TIC_TAC_TOE_CONTRACT_ADDRESS || !publicClient) return;
+      setIsBusy(true);
+      try {
+        const hash = await writeContractAsync({
+          address: TIC_TAC_TOE_CONTRACT_ADDRESS,
+          abi: ticTacToeAbi,
+          functionName: "startGame",
+          args: [DIFFICULTY_CODE[chosenDifficulty]],
+        });
+        const receipt = await publicClient.waitForTransactionReceipt({ hash });
+        for (const log of receipt.logs) {
+          try {
+            const decoded = decodeEventLog({ abi: ticTacToeAbi, ...log });
+            if (decoded.eventName === "GameStarted") {
+              setGameId(decoded.args.gameId);
+              return;
+            }
+          } catch {
+            // Not a GameStarted log from this contract — skip.
+          }
+        }
+        setError("Game started, but the game id couldn't be read back.");
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Failed to start the game.");
+      } finally {
+        setIsBusy(false);
+      }
+    },
+    [mode, publicClient, writeContractAsync],
+  );
 
   const playCell = useCallback(
     async (cell: number) => {
@@ -94,7 +102,7 @@ export function useTicTacToeGame(): TicTacToeGame {
       setError(null);
 
       if (mode === "demo") {
-        const result = applyPlayerMove(board, cell);
+        const result = applyPlayerMove(board, cell, difficulty ?? "hard");
         setBoard(result.board);
         setStatus(result.status);
         return;
@@ -129,8 +137,8 @@ export function useTicTacToeGame(): TicTacToeGame {
         setIsBusy(false);
       }
     },
-    [address, board, gameId, mode, publicClient, status, writeContractAsync],
+    [address, board, difficulty, gameId, mode, publicClient, status, writeContractAsync],
   );
 
-  return { mode, board, status, gameId, isBusy, error, startGame, playCell };
+  return { mode, board, status, gameId, difficulty, isBusy, error, startGame, playCell };
 }

@@ -1,15 +1,24 @@
+import type { Difficulty } from "@/lib/game/engine";
+
 /**
  * ABI for TicTacToe.sol (see contracts/src/TicTacToe.sol).
  *
  * Status encoding: 0 = None, 1 = Active, 2 = PlayerWon, 3 = ComputerWon, 4 = Draw.
  * Board cells: 0 = empty, 1 = player (X), 2 = computer (O).
+ * Difficulty encoding: 0 = Easy, 1 = Medium, 2 = Hard.
  */
+export const DIFFICULTY_CODE: Record<Difficulty, number> = {
+  easy: 0,
+  medium: 1,
+  hard: 2,
+};
+
 export const ticTacToeAbi = [
   {
     type: "function",
     name: "startGame",
     stateMutability: "nonpayable",
-    inputs: [],
+    inputs: [{ name: "difficulty", type: "uint8" }],
     outputs: [{ name: "gameId", type: "uint256" }],
   },
   {
