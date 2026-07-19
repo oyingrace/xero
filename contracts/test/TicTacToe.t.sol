@@ -4,21 +4,25 @@ pragma solidity ^0.8.20;
 import {Test} from "forge-std/Test.sol";
 import {TicTacToe} from "../src/TicTacToe.sol";
 
-/// @dev Exposes TicTacToe's internal helpers so the deterministic parts of
-///      the AI (win/block priority) can be tested directly, without routing
-///      through startGame/makeMove and without depending on the exact
-///      pseudo-random value blockhash/timestamp happen to produce.
+/// @dev Exposes TicTacToe's internal helpers so tests can simulate a game
+///      move-by-move (to build the move list `playGame` expects) and check
+///      the win/block-priority logic directly, without depending on the
+///      exact pseudo-random value a given seed happens to produce.
 contract TicTacToeHarness is TicTacToe {
     function findWinningMove(uint8[9] memory board, uint8 mark) external pure returns (bool, uint8) {
         return _findWinningMove(board, mark);
     }
 
-    function bestMove(uint8[9] memory board, Difficulty difficulty, uint256 gameId, uint8 salt)
+    function bestMove(uint8[9] memory board, Difficulty difficulty, uint256 seed, uint8 moveIndex)
         external
-        view
+        pure
         returns (uint8)
     {
-        return _bestMove(board, difficulty, gameId, salt);
+        return _bestMove(board, difficulty, seed, moveIndex);
+    }
+
+    function statusOf(uint8[9] memory board) external pure returns (Status) {
+        return _statusOf(board);
     }
 }
 
@@ -32,87 +36,129 @@ contract TicTacToeTest is Test {
         harness = new TicTacToeHarness();
     }
 
-    function _start(TicTacToe.Difficulty difficulty) internal returns (uint256 gameId) {
-        vm.prank(player);
-        gameId = game.startGame(difficulty);
-    }
+    /// @dev Simulates a full game exactly the way the frontend will: play
+    ///      `firstMove`, then always the first empty cell after that,
+    ///      using the harness to compute each computer reply. Returns the
+    ///      player's move list (what `playGame` expects), the final board,
+    ///      and the final status.
+    function _simulate(TicTacToe.Difficulty difficulty, uint256 seed, uint8 firstMove)
+        internal
+        view
+        returns (uint8[] memory moves, uint8[9] memory board, TicTacToe.Status status)
+    {
+        uint8[5] memory buffer; // MAX_PLAYER_MOVES in TicTacToe.sol
+        uint8 count = 0;
+        status = TicTacToe.Status.Active;
 
-    function _move(uint256 gameId, uint8 cell) internal returns (uint8[9] memory board, TicTacToe.Status status) {
-        vm.prank(player);
-        return game.makeMove(gameId, cell);
-    }
+        for (uint8 i = 0; i < 5; i++) {
+            uint8 cell = i == 0 ? firstMove : _firstEmptyCell(board);
+            board[cell] = 1; // PLAYER
+            buffer[count] = cell;
+            count++;
 
-    // ---- Game lifecycle (Hard, unless the test is difficulty-specific) ----
+            status = harness.statusOf(board);
+            if (status != TicTacToe.Status.Active) break;
 
-    function test_startGame_opensAnActiveGameForTheCaller() public {
-        uint256 gameId = _start(TicTacToe.Difficulty.Hard);
-        (address storedPlayer,, TicTacToe.Status status, TicTacToe.Difficulty difficulty) = game.getGame(gameId);
-        assertEq(storedPlayer, player);
-        assertEq(uint8(status), uint8(TicTacToe.Status.Active));
-        assertEq(uint8(difficulty), uint8(TicTacToe.Difficulty.Hard));
-    }
-
-    function test_makeMove_placesXAndTheComputerRepliesInOneCall() public {
-        uint256 gameId = _start(TicTacToe.Difficulty.Hard);
-        (uint8[9] memory board,) = _move(gameId, 0);
-
-        assertEq(board[0], 1, "player's X should be placed");
-        uint256 computerMoves = 0;
-        for (uint256 i = 0; i < 9; i++) {
-            if (board[i] == 2) computerMoves++;
+            uint8 computerCell = harness.bestMove(board, difficulty, seed, i);
+            board[computerCell] = 2; // COMPUTER
+            status = harness.statusOf(board);
+            if (status != TicTacToe.Status.Active) break;
         }
-        assertEq(computerMoves, 1, "computer should have replied exactly once");
+
+        moves = new uint8[](count);
+        for (uint8 i = 0; i < count; i++) {
+            moves[i] = buffer[i];
+        }
     }
 
-    function test_makeMove_revertsForSomeoneElsesGame() public {
-        uint256 gameId = _start(TicTacToe.Difficulty.Hard);
-        vm.prank(address(0xC0FFEE));
-        vm.expectRevert(TicTacToe.NotYourGame.selector);
-        game.makeMove(gameId, 0);
-    }
-
-    function test_makeMove_revertsOnOccupiedCell() public {
-        uint256 gameId = _start(TicTacToe.Difficulty.Hard);
-        _move(gameId, 0);
+    function _playGame(TicTacToe.Difficulty difficulty, uint256 seed, uint8[] memory moves)
+        internal
+        returns (uint256 gameId, uint8[9] memory board, TicTacToe.Status status)
+    {
         vm.prank(player);
-        vm.expectRevert(TicTacToe.CellOccupied.selector);
-        game.makeMove(gameId, 0);
+        return game.playGame(difficulty, seed, moves);
     }
 
-    function test_makeMove_revertsOnInvalidCell() public {
-        uint256 gameId = _start(TicTacToe.Difficulty.Hard);
+    // ---- playGame lifecycle ----
+
+    function test_playGame_recordsTheReplayedResultForTheCaller() public {
+        (uint8[] memory moves, uint8[9] memory expectedBoard, TicTacToe.Status expectedStatus) =
+            _simulate(TicTacToe.Difficulty.Hard, 1, 0);
+
+        (uint256 gameId, uint8[9] memory board, TicTacToe.Status status) =
+            _playGame(TicTacToe.Difficulty.Hard, 1, moves);
+
+        assertEq(gameId, 0);
+        assertEq(uint8(status), uint8(expectedStatus));
+        for (uint8 i = 0; i < 9; i++) {
+            assertEq(board[i], expectedBoard[i], "board must match the independent simulation");
+        }
+
+        (address storedPlayer, uint8[9] memory storedBoard, TicTacToe.Status storedStatus, TicTacToe.Difficulty storedDifficulty)
+        = game.getGame(gameId);
+        assertEq(storedPlayer, player);
+        assertEq(uint8(storedStatus), uint8(status));
+        assertEq(uint8(storedDifficulty), uint8(TicTacToe.Difficulty.Hard));
+        for (uint8 i = 0; i < 9; i++) {
+            assertEq(storedBoard[i], board[i]);
+        }
+    }
+
+    function test_playGame_revertsOnEmptyMoveList() public {
+        uint8[] memory moves = new uint8[](0);
+        vm.prank(player);
+        vm.expectRevert(TicTacToe.InvalidMoveCount.selector);
+        game.playGame(TicTacToe.Difficulty.Hard, 1, moves);
+    }
+
+    function test_playGame_revertsOnTooManyMoves() public {
+        uint8[] memory moves = new uint8[](6);
+        for (uint8 i = 0; i < 6; i++) moves[i] = i;
+        vm.prank(player);
+        vm.expectRevert(TicTacToe.InvalidMoveCount.selector);
+        game.playGame(TicTacToe.Difficulty.Hard, 1, moves);
+    }
+
+    function test_playGame_revertsOnInvalidCell() public {
+        uint8[] memory moves = new uint8[](1);
+        moves[0] = 9;
         vm.prank(player);
         vm.expectRevert(TicTacToe.InvalidCell.selector);
-        game.makeMove(gameId, 9);
+        game.playGame(TicTacToe.Difficulty.Hard, 1, moves);
     }
 
-    function test_makeMove_revertsWhenGameIsOver() public {
-        uint256 gameId = _start(TicTacToe.Difficulty.Hard);
-        (, TicTacToe.Status status) = _move(gameId, 0);
-        while (status == TicTacToe.Status.Active) {
-            (, uint8[9] memory board, TicTacToe.Status s,) = game.getGame(gameId);
-            uint8 nextCell = _firstEmptyCell(board);
-            (, status) = _move(gameId, nextCell);
-            s;
-        }
+    function test_playGame_revertsOnOccupiedCell() public {
+        // Cell 0 is X on the first move, so replaying it on the (nonexistent)
+        // "third" move is always occupied regardless of the computer's reply.
+        uint8[] memory moves = new uint8[](2);
+        moves[0] = 0;
+        moves[1] = 0;
         vm.prank(player);
-        vm.expectRevert(TicTacToe.GameNotActive.selector);
-        game.makeMove(gameId, 0);
+        vm.expectRevert(TicTacToe.CellOccupied.selector);
+        game.playGame(TicTacToe.Difficulty.Hard, 1, moves);
+    }
+
+    function test_playGame_revertsOnIncompleteGame() public {
+        // A single move (1 X + 1 O) can never end a game.
+        uint8[] memory moves = new uint8[](1);
+        moves[0] = 0;
+        vm.prank(player);
+        vm.expectRevert(TicTacToe.GameIncomplete.selector);
+        game.playGame(TicTacToe.Difficulty.Hard, 1, moves);
     }
 
     // ---- Hard: must never lose ----
 
-    /// @dev The computer must never lose regardless of which empty cells the
-    ///      player happens to fill in, matching the guarantee proven for the
-    ///      TypeScript engine in app/lib/game/engine.test.ts.
-    function test_hard_computerNeverLoses_acrossFirstAvailableCellPlay() public {
+    /// @dev The computer must never lose regardless of which cell the player
+    ///      opens with, matching the guarantee proven for the TypeScript
+    ///      engine in app/lib/game/engine.test.ts.
+    function test_hard_computerNeverLoses_acrossEveryOpening() public {
         for (uint8 opening = 0; opening < 9; opening++) {
-            uint256 gameId = _start(TicTacToe.Difficulty.Hard);
-            (uint8[9] memory board, TicTacToe.Status status) = _move(gameId, opening);
-            while (status == TicTacToe.Status.Active) {
-                uint8 nextCell = _firstEmptyCell(board);
-                (board, status) = _move(gameId, nextCell);
-            }
+            (uint8[] memory moves,, TicTacToe.Status simulatedStatus) =
+                _simulate(TicTacToe.Difficulty.Hard, uint256(opening) + 1, opening);
+            (,, TicTacToe.Status status) = _playGame(TicTacToe.Difficulty.Hard, uint256(opening) + 1, moves);
+
+            assertEq(uint8(status), uint8(simulatedStatus), "playGame must match the independent simulation");
             assertTrue(
                 status == TicTacToe.Status.Draw || status == TicTacToe.Status.ComputerWon,
                 "player must never win on hard"
@@ -121,10 +167,6 @@ contract TicTacToeTest is Test {
     }
 
     // ---- Medium/Easy: deterministic win/block priority ----
-    //
-    // These call the harness directly instead of playing through
-    // startGame/makeMove, so they exercise the win/block logic exactly
-    // without depending on the pseudo-random fallback's exact output.
 
     function test_findWinningMove_findsAnAvailableWin() public view {
         uint8[9] memory board = [0, 0, 0, 0, 0, 2, 0, 0, 2]; // O at 5,8 — win at 2
@@ -161,19 +203,34 @@ contract TicTacToeTest is Test {
         assertTrue(board[cell] == 0, "easy must still choose an empty cell");
     }
 
-    // ---- Legality smoke tests across full games ----
+    /// @dev Same seed + same moves must always reproduce the same game —
+    ///      this is the property the whole one-transaction design leans on
+    ///      (the client's local play must match what gets recorded).
+    function test_sameSeedAndMoves_alwaysReproduceTheSameGame() public view {
+        (uint8[] memory movesA, uint8[9] memory boardA, TicTacToe.Status statusA) =
+            _simulate(TicTacToe.Difficulty.Medium, 777, 4);
+        (uint8[] memory movesB, uint8[9] memory boardB, TicTacToe.Status statusB) =
+            _simulate(TicTacToe.Difficulty.Medium, 777, 4);
+
+        assertEq(uint8(statusA), uint8(statusB));
+        assertEq(movesA.length, movesB.length);
+        for (uint8 i = 0; i < movesA.length; i++) {
+            assertEq(movesA[i], movesB[i]);
+        }
+        for (uint8 i = 0; i < 9; i++) {
+            assertEq(boardA[i], boardB[i]);
+        }
+    }
+
+    // ---- Legality across many games ----
 
     function test_medium_alwaysPlaysLegallyToCompletion() public {
         for (uint8 opening = 0; opening < 9; opening++) {
-            uint256 gameId = _start(TicTacToe.Difficulty.Medium);
-            (uint8[9] memory board, TicTacToe.Status status) = _move(gameId, opening);
-            uint256 guard = 0;
-            while (status == TicTacToe.Status.Active) {
-                guard++;
-                assertLt(guard, 9, "game did not terminate");
-                uint8 nextCell = _firstEmptyCell(board);
-                (board, status) = _move(gameId, nextCell);
-            }
+            (uint8[] memory moves,, TicTacToe.Status simulatedStatus) =
+                _simulate(TicTacToe.Difficulty.Medium, uint256(opening) + 100, opening);
+            (,, TicTacToe.Status status) =
+                _playGame(TicTacToe.Difficulty.Medium, uint256(opening) + 100, moves);
+            assertEq(uint8(status), uint8(simulatedStatus));
             assertTrue(
                 status == TicTacToe.Status.Draw ||
                     status == TicTacToe.Status.ComputerWon ||
@@ -184,15 +241,10 @@ contract TicTacToeTest is Test {
 
     function test_easy_alwaysPlaysLegallyToCompletion() public {
         for (uint8 opening = 0; opening < 9; opening++) {
-            uint256 gameId = _start(TicTacToe.Difficulty.Easy);
-            (uint8[9] memory board, TicTacToe.Status status) = _move(gameId, opening);
-            uint256 guard = 0;
-            while (status == TicTacToe.Status.Active) {
-                guard++;
-                assertLt(guard, 9, "game did not terminate");
-                uint8 nextCell = _firstEmptyCell(board);
-                (board, status) = _move(gameId, nextCell);
-            }
+            (uint8[] memory moves,, TicTacToe.Status simulatedStatus) =
+                _simulate(TicTacToe.Difficulty.Easy, uint256(opening) + 200, opening);
+            (,, TicTacToe.Status status) = _playGame(TicTacToe.Difficulty.Easy, uint256(opening) + 200, moves);
+            assertEq(uint8(status), uint8(simulatedStatus));
             assertTrue(
                 status == TicTacToe.Status.Draw ||
                     status == TicTacToe.Status.ComputerWon ||
