@@ -16,20 +16,15 @@ export const DIFFICULTY_CODE: Record<Difficulty, number> = {
 export const ticTacToeAbi = [
   {
     type: "function",
-    name: "startGame",
-    stateMutability: "nonpayable",
-    inputs: [{ name: "difficulty", type: "uint8" }],
-    outputs: [{ name: "gameId", type: "uint256" }],
-  },
-  {
-    type: "function",
-    name: "makeMove",
+    name: "playGame",
     stateMutability: "nonpayable",
     inputs: [
-      { name: "gameId", type: "uint256" },
-      { name: "cell", type: "uint8" },
+      { name: "difficulty", type: "uint8" },
+      { name: "seed", type: "uint256" },
+      { name: "moves", type: "uint8[]" },
     ],
     outputs: [
+      { name: "gameId", type: "uint256" },
       { name: "board", type: "uint8[9]" },
       { name: "status", type: "uint8" },
     ],
@@ -48,18 +43,13 @@ export const ticTacToeAbi = [
   },
   {
     type: "event",
-    name: "GameStarted",
+    name: "GamePlayed",
     inputs: [
       { name: "gameId", type: "uint256", indexed: true },
       { name: "player", type: "address", indexed: true },
       { name: "difficulty", type: "uint8", indexed: false },
-    ],
-  },
-  {
-    type: "event",
-    name: "MoveMade",
-    inputs: [
-      { name: "gameId", type: "uint256", indexed: true },
+      { name: "seed", type: "uint256", indexed: false },
+      { name: "moves", type: "uint8[]", indexed: false },
       { name: "board", type: "uint8[9]", indexed: false },
       { name: "status", type: "uint8", indexed: false },
     ],

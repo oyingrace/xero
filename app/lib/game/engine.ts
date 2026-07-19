@@ -10,15 +10,22 @@
  *   of this file was proven beatable by a fuzz test (random move sequence
  *   `[4, 8, 2, 6]`) before minimax replaced it — see engine.test.ts for the
  *   regression coverage that caught it. On hard, the best a player can do
- *   is draw.
+ *   is draw. Never uses `seed`.
  * - "medium": takes an immediate win or blocks an immediate loss when one
- *   is available, otherwise plays a random empty cell. No deeper lookahead,
- *   so it can be forked and beaten.
- * - "easy": always a random empty cell. No strategy at all.
+ *   is available, otherwise plays a seeded-random empty cell. No deeper
+ *   lookahead, so it can be forked and beaten.
+ * - "easy": always a seeded-random empty cell. No strategy at all.
  *
- * `TicTacToe.sol` implements the same three difficulties on-chain; keep
- * the two in sync if either changes.
+ * The whole game is played locally, then submitted to `TicTacToe.sol` in
+ * one transaction as a move list plus the `seed` used here — the contract
+ * replays the game itself and only that replay is authoritative. For that
+ * to work, Easy/Medium's "random" fallback has to be exactly reproducible:
+ * `seededEmptyCellIndex` computes `keccak256(seed, moveIndex) % emptyCount`
+ * the same way `_randomEmptyCell`/`_bestMove` do on-chain, so what the
+ * player sees while playing always matches what gets recorded. Keep the
+ * two in sync if either changes.
  */
+import { encodePacked, keccak256 } from "viem";
 
 export const EMPTY = 0;
 export const PLAYER = 1; // X, moves first
@@ -31,6 +38,13 @@ export type GameStatus = "active" | "player_won" | "computer_won" | "draw";
 export type Difficulty = "easy" | "medium" | "hard";
 
 export const EMPTY_BOARD: Board = Array(9).fill(EMPTY);
+
+/** A fresh 256-bit random seed for a new game (see the module comment). */
+export function generateSeed(): bigint {
+  const bytes = new Uint8Array(32);
+  crypto.getRandomValues(bytes);
+  return bytes.reduce((acc, byte) => (acc << BigInt(8)) | BigInt(byte), BigInt(0));
+}
 
 export const LINES: readonly (readonly [number, number, number])[] = [
   [0, 1, 2],
@@ -140,53 +154,68 @@ function computeHardMove(board: Board): number {
   return bestCell;
 }
 
-/** Takes an immediate win or block if available, otherwise plays randomly. */
-function computeMediumMove(board: Board, random: () => number): number {
+/**
+ * The `seed`-th empty cell, in board order — the exact formula
+ * `_randomEmptyCell` uses on-chain, so a client that knows `seed` ahead of
+ * time can always reproduce the contract's choice.
+ */
+function seededEmptyCellIndex(board: Board, seed: bigint, moveIndex: number): number {
+  const hash = keccak256(encodePacked(["uint256", "uint8"], [seed, moveIndex]));
+  const randomValue = BigInt(hash);
+  const candidates = emptyCells(board);
+  const target = randomValue % BigInt(candidates.length);
+  return candidates[Number(target)];
+}
+
+/** Takes an immediate win or block if available, otherwise a seeded-random cell. */
+function computeMediumMove(board: Board, seed: bigint, moveIndex: number): number {
   const winMove = findWinningMove(board, COMPUTER);
   if (winMove !== -1) return winMove;
 
   const blockMove = findWinningMove(board, PLAYER);
   if (blockMove !== -1) return blockMove;
 
-  return computeEasyMove(board, random);
-}
-
-/** No strategy: a uniformly random empty cell. */
-function computeEasyMove(board: Board, random: () => number): number {
-  const candidates = emptyCells(board);
-  return candidates[Math.floor(random() * candidates.length)];
+  return seededEmptyCellIndex(board, seed, moveIndex);
 }
 
 /**
  * Picks the computer's (O's) next move against the current board.
  * Assumes it is the computer's turn and the game is still active.
  *
- * `random` is injectable so tests can seed deterministic easy/medium play;
- * it defaults to `Math.random` and is unused on "hard" (fully deterministic).
+ * `seed` and `moveIndex` drive Easy/Medium's random fallback (unused on
+ * "hard", which is fully deterministic) — see the module comment on why
+ * they need to be reproducible rather than plain `Math.random()`.
  */
 export function computeComputerMove(
   board: Board,
-  difficulty: Difficulty = "hard",
-  random: () => number = Math.random,
+  difficulty: Difficulty,
+  seed: bigint,
+  moveIndex: number,
 ): number {
   if (emptyCells(board).length === 0) throw new Error("computeComputerMove: board is full");
 
   switch (difficulty) {
     case "easy":
-      return computeEasyMove(board, random);
+      return seededEmptyCellIndex(board, seed, moveIndex);
     case "medium":
-      return computeMediumMove(board, random);
+      return computeMediumMove(board, seed, moveIndex);
     case "hard":
       return computeHardMove(board);
   }
 }
 
-/** Applies a player move, then (if the game continues) the computer's reply. */
+/**
+ * Applies a player move, then (if the game continues) the computer's
+ * reply. `moveIndex` is this move's 0-based position in the game (the
+ * same index the eventual `playGame(difficulty, seed, moves)` call will
+ * use for `moves[moveIndex]`).
+ */
 export function applyPlayerMove(
   board: Board,
   cell: number,
-  difficulty: Difficulty = "hard",
-  random: () => number = Math.random,
+  difficulty: Difficulty,
+  seed: bigint,
+  moveIndex: number,
 ): { board: Board; status: GameStatus } {
   if (board[cell] !== EMPTY) throw new Error("applyPlayerMove: cell is occupied");
 
@@ -196,7 +225,7 @@ export function applyPlayerMove(
   let status = getStatus(afterPlayer);
   if (status !== "active") return { board: afterPlayer, status };
 
-  const computerCell = computeComputerMove(afterPlayer, difficulty, random);
+  const computerCell = computeComputerMove(afterPlayer, difficulty, seed, moveIndex);
   const afterComputer = afterPlayer.slice() as Mark[];
   afterComputer[computerCell] = COMPUTER;
 

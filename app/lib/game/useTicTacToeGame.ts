@@ -1,13 +1,14 @@
 "use client";
 
 import { useCallback, useState } from "react";
-import { useAccount, usePublicClient, useWriteContract } from "wagmi";
+import { usePublicClient, useWriteContract } from "wagmi";
 import { decodeEventLog } from "viem";
 import { DIFFICULTY_CODE, ticTacToeAbi } from "@/lib/web3/ticTacToeAbi";
 import { TIC_TAC_TOE_CONTRACT_ADDRESS } from "@/lib/web3/constants";
 import {
   EMPTY_BOARD,
   applyPlayerMove,
+  generateSeed,
   type Board,
   type Difficulty,
   type GameStatus,
@@ -20,13 +21,20 @@ export interface TicTacToeGame {
   mode: GameMode;
   board: Board;
   status: GameStatus;
-  gameId: bigint | null;
   difficulty: Difficulty | null;
-  /** True while a move (or game start) is being submitted/confirmed. */
+  /** Set once `submitResult` has confirmed on-chain. */
+  gameId: bigint | null;
+  /** True once this game's result has been recorded on-chain. */
+  isSubmitted: boolean;
+  /** True only while the final `playGame` transaction is pending. */
   isBusy: boolean;
   error: string | null;
-  startGame: (difficulty: Difficulty) => Promise<void>;
-  playCell: (cell: number) => Promise<void>;
+  /** Starts a fresh game locally — no wallet or transaction involved. */
+  startGame: (difficulty: Difficulty) => void;
+  /** Plays a cell locally — no wallet or transaction involved. */
+  playCell: (cell: number) => void;
+  /** The one on-chain transaction: submits the finished game to be recorded. */
+  submitResult: () => Promise<void>;
 }
 
 const STATUS_BY_CODE: GameStatus[] = ["active", "active", "player_won", "computer_won", "draw"];
@@ -34,111 +42,103 @@ const STATUS_BY_CODE: GameStatus[] = ["active", "active", "player_won", "compute
 /**
  * Drives a game of tic-tac-toe.
  *
- * When `NEXT_PUBLIC_TIC_TAC_TOE_CONTRACT_ADDRESS` is set, every move is a
- * real transaction against `TicTacToe.sol` — the contract places X, runs
- * its on-chain minimax for O, and returns the updated board. Without a
- * deployed contract this falls back to the identical game engine running
- * locally ("demo mode"), so the game is fully playable before deployment.
+ * The whole game is played locally (`startGame`/`playCell` never touch the
+ * network) using the same engine `TicTacToe.sol` implements, seeded with a
+ * fresh random value each game so Easy/Medium's random fallback is exactly
+ * reproducible on-chain later. Once the game ends, `submitResult` — the
+ * only network call in this hook — submits the full move list plus that
+ * seed in a single `playGame` transaction; the contract independently
+ * replays the game to determine the recorded outcome. Without a deployed
+ * contract (`NEXT_PUBLIC_TIC_TAC_TOE_CONTRACT_ADDRESS` unset), this runs in
+ * "demo mode": still fully playable, just nothing to submit.
  */
 export function useTicTacToeGame(): TicTacToeGame {
   const mode: GameMode = TIC_TAC_TOE_CONTRACT_ADDRESS ? "onchain" : "demo";
-  const { address } = useAccount();
   const { writeContractAsync } = useWriteContract();
   const publicClient = usePublicClient();
 
   const [board, setBoard] = useState<Board>(EMPTY_BOARD);
   const [status, setStatus] = useState<GameStatus>("active");
-  const [gameId, setGameId] = useState<bigint | null>(null);
   const [difficulty, setDifficulty] = useState<Difficulty | null>(null);
+  const [seed, setSeed] = useState<bigint | null>(null);
+  const [moves, setMoves] = useState<number[]>([]);
+  const [gameId, setGameId] = useState<bigint | null>(null);
+  const [isSubmitted, setIsSubmitted] = useState(false);
   const [isBusy, setIsBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const startGame = useCallback(
-    async (chosenDifficulty: Difficulty) => {
-      setError(null);
-      setBoard(EMPTY_BOARD);
-      setStatus("active");
-      setDifficulty(chosenDifficulty);
-
-      if (mode === "demo") {
-        setGameId(BigInt(0));
-        return;
-      }
-
-      if (!TIC_TAC_TOE_CONTRACT_ADDRESS || !publicClient) return;
-      setIsBusy(true);
-      try {
-        const hash = await writeContractAsync({
-          address: TIC_TAC_TOE_CONTRACT_ADDRESS,
-          abi: ticTacToeAbi,
-          functionName: "startGame",
-          args: [DIFFICULTY_CODE[chosenDifficulty]],
-        });
-        const receipt = await publicClient.waitForTransactionReceipt({ hash });
-        for (const log of receipt.logs) {
-          try {
-            const decoded = decodeEventLog({ abi: ticTacToeAbi, ...log });
-            if (decoded.eventName === "GameStarted") {
-              setGameId(decoded.args.gameId);
-              return;
-            }
-          } catch {
-            // Not a GameStarted log from this contract — skip.
-          }
-        }
-        setError("Game started, but the game id couldn't be read back.");
-      } catch (err) {
-        setError(err instanceof Error ? err.message : "Failed to start the game.");
-      } finally {
-        setIsBusy(false);
-      }
-    },
-    [mode, publicClient, writeContractAsync],
-  );
+  const startGame = useCallback((chosenDifficulty: Difficulty) => {
+    setError(null);
+    setBoard(EMPTY_BOARD);
+    setStatus("active");
+    setDifficulty(chosenDifficulty);
+    setSeed(generateSeed());
+    setMoves([]);
+    setGameId(null);
+    setIsSubmitted(false);
+  }, []);
 
   const playCell = useCallback(
-    async (cell: number) => {
-      if (status !== "active" || board[cell] !== 0) return;
-      setError(null);
+    (cell: number) => {
+      if (status !== "active" || board[cell] !== 0 || difficulty === null || seed === null) return;
 
-      if (mode === "demo") {
-        const result = applyPlayerMove(board, cell, difficulty ?? "hard");
-        setBoard(result.board);
-        setStatus(result.status);
-        return;
-      }
-
-      if (!TIC_TAC_TOE_CONTRACT_ADDRESS || !publicClient || gameId === null || !address) return;
-      setIsBusy(true);
-      try {
-        const hash = await writeContractAsync({
-          address: TIC_TAC_TOE_CONTRACT_ADDRESS,
-          abi: ticTacToeAbi,
-          functionName: "makeMove",
-          args: [gameId, cell],
-        });
-        const receipt = await publicClient.waitForTransactionReceipt({ hash });
-        for (const log of receipt.logs) {
-          try {
-            const decoded = decodeEventLog({ abi: ticTacToeAbi, ...log });
-            if (decoded.eventName === "MoveMade") {
-              setBoard(decoded.args.board as unknown as Board);
-              setStatus(STATUS_BY_CODE[Number(decoded.args.status)] ?? "active");
-              return;
-            }
-          } catch {
-            // Not a MoveMade log from this contract — skip.
-          }
-        }
-        setError("Move confirmed, but the board update couldn't be read back.");
-      } catch (err) {
-        setError(err instanceof Error ? err.message : "Failed to submit the move.");
-      } finally {
-        setIsBusy(false);
-      }
+      const moveIndex = moves.length;
+      const result = applyPlayerMove(board, cell, difficulty, seed, moveIndex);
+      setBoard(result.board);
+      setStatus(result.status);
+      setMoves((prev) => [...prev, cell]);
     },
-    [address, board, difficulty, gameId, mode, publicClient, status, writeContractAsync],
+    [board, difficulty, moves.length, seed, status],
   );
 
-  return { mode, board, status, gameId, difficulty, isBusy, error, startGame, playCell };
+  const submitResult = useCallback(async () => {
+    if (mode !== "onchain") return;
+    if (status === "active" || difficulty === null || seed === null || moves.length === 0) return;
+    if (!TIC_TAC_TOE_CONTRACT_ADDRESS || !publicClient || isSubmitted) return;
+
+    setError(null);
+    setIsBusy(true);
+    try {
+      const hash = await writeContractAsync({
+        address: TIC_TAC_TOE_CONTRACT_ADDRESS,
+        abi: ticTacToeAbi,
+        functionName: "playGame",
+        args: [DIFFICULTY_CODE[difficulty], seed, moves],
+      });
+      const receipt = await publicClient.waitForTransactionReceipt({ hash });
+      for (const log of receipt.logs) {
+        try {
+          const decoded = decodeEventLog({ abi: ticTacToeAbi, ...log });
+          if (decoded.eventName === "GamePlayed") {
+            setGameId(decoded.args.gameId);
+            setBoard(decoded.args.board as unknown as Board);
+            setStatus(STATUS_BY_CODE[Number(decoded.args.status)] ?? status);
+            setIsSubmitted(true);
+            return;
+          }
+        } catch {
+          // Not a GamePlayed log from this contract — skip.
+        }
+      }
+      setError("Transaction confirmed, but the result couldn't be read back.");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to submit the result.");
+    } finally {
+      setIsBusy(false);
+    }
+  }, [difficulty, isSubmitted, mode, moves, publicClient, seed, status, writeContractAsync]);
+
+  return {
+    mode,
+    board,
+    status,
+    difficulty,
+    gameId,
+    isSubmitted,
+    isBusy,
+    error,
+    startGame,
+    playCell,
+    submitResult,
+  };
 }
