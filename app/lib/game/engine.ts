@@ -1,17 +1,23 @@
 /**
  * Tic-tac-toe rules + the computer opponent's move selection.
  *
- * The computer plays perfect minimax (depth-adjusted so it prefers a
- * faster win and a slower loss). The board is tiny — at most 8 empty
- * cells when the computer is ever asked to move — so an exhaustive
- * search is instant and, unlike heuristic shortcuts (win/block/fork/
- * block-fork rules), is mathematically guaranteed to never lose. An
- * earlier heuristic version of this file was proven beatable by a fuzz
- * test (random move sequence `[4, 8, 2, 6]`) before minimax replaced it —
- * see engine.test.ts for the regression coverage that caught it.
+ * Three difficulties:
+ * - "hard": perfect minimax (depth-adjusted so it prefers a faster win and
+ *   a slower loss). The board is tiny — at most 8 empty cells when the
+ *   computer is ever asked to move — so an exhaustive search is instant
+ *   and, unlike heuristic shortcuts (win/block/fork/block-fork rules), is
+ *   mathematically guaranteed to never lose. An earlier heuristic version
+ *   of this file was proven beatable by a fuzz test (random move sequence
+ *   `[4, 8, 2, 6]`) before minimax replaced it — see engine.test.ts for the
+ *   regression coverage that caught it. On hard, the best a player can do
+ *   is draw.
+ * - "medium": takes an immediate win or blocks an immediate loss when one
+ *   is available, otherwise plays a random empty cell. No deeper lookahead,
+ *   so it can be forked and beaten.
+ * - "easy": always a random empty cell. No strategy at all.
  *
- * `TicTacToe.sol` implements the same minimax on-chain; keep the two in
- * sync if either changes.
+ * `TicTacToe.sol` implements the same three difficulties on-chain; keep
+ * the two in sync if either changes.
  */
 
 export const EMPTY = 0;
@@ -22,6 +28,7 @@ export type Mark = typeof EMPTY | typeof PLAYER | typeof COMPUTER;
 export type Board = readonly Mark[]; // length 9
 
 export type GameStatus = "active" | "player_won" | "computer_won" | "draw";
+export type Difficulty = "easy" | "medium" | "hard";
 
 export const EMPTY_BOARD: Board = Array(9).fill(EMPTY);
 
@@ -53,6 +60,17 @@ export function checkWinner(board: Board, mark: Mark): boolean {
 /** The three cells of `mark`'s winning line, for highlighting; null if no winner. */
 export function findWinningLine(board: Board, mark: Mark): readonly [number, number, number] | null {
   return LINES.find((line) => line.every((cell) => board[cell] === mark)) ?? null;
+}
+
+/** First empty cell that would complete a line for `mark`, or -1 if none. */
+function findWinningMove(board: Board, mark: Mark): number {
+  for (const line of LINES) {
+    const marks = line.map((cell) => board[cell]);
+    if (marks.filter((m) => m === mark).length === 2 && marks.filter((m) => m === EMPTY).length === 1) {
+      return line[marks.indexOf(EMPTY)];
+    }
+  }
+  return -1;
 }
 
 export function getStatus(board: Board): GameStatus {
@@ -105,14 +123,9 @@ function minimax(
   return best;
 }
 
-/**
- * Picks the computer's (O's) next move against the current board.
- * Assumes it is the computer's turn and the game is still active.
- */
-export function computeComputerMove(board: Board): number {
+/** Perfect play: exhaustive minimax. Never loses — see the module comment. */
+function computeHardMove(board: Board): number {
   const candidates = emptyCells(board);
-  if (candidates.length === 0) throw new Error("computeComputerMove: board is full");
-
   let bestCell = candidates[0];
   let bestScore = -Infinity;
   for (const cell of candidates) {
@@ -127,10 +140,53 @@ export function computeComputerMove(board: Board): number {
   return bestCell;
 }
 
+/** Takes an immediate win or block if available, otherwise plays randomly. */
+function computeMediumMove(board: Board, random: () => number): number {
+  const winMove = findWinningMove(board, COMPUTER);
+  if (winMove !== -1) return winMove;
+
+  const blockMove = findWinningMove(board, PLAYER);
+  if (blockMove !== -1) return blockMove;
+
+  return computeEasyMove(board, random);
+}
+
+/** No strategy: a uniformly random empty cell. */
+function computeEasyMove(board: Board, random: () => number): number {
+  const candidates = emptyCells(board);
+  return candidates[Math.floor(random() * candidates.length)];
+}
+
+/**
+ * Picks the computer's (O's) next move against the current board.
+ * Assumes it is the computer's turn and the game is still active.
+ *
+ * `random` is injectable so tests can seed deterministic easy/medium play;
+ * it defaults to `Math.random` and is unused on "hard" (fully deterministic).
+ */
+export function computeComputerMove(
+  board: Board,
+  difficulty: Difficulty = "hard",
+  random: () => number = Math.random,
+): number {
+  if (emptyCells(board).length === 0) throw new Error("computeComputerMove: board is full");
+
+  switch (difficulty) {
+    case "easy":
+      return computeEasyMove(board, random);
+    case "medium":
+      return computeMediumMove(board, random);
+    case "hard":
+      return computeHardMove(board);
+  }
+}
+
 /** Applies a player move, then (if the game continues) the computer's reply. */
 export function applyPlayerMove(
   board: Board,
   cell: number,
+  difficulty: Difficulty = "hard",
+  random: () => number = Math.random,
 ): { board: Board; status: GameStatus } {
   if (board[cell] !== EMPTY) throw new Error("applyPlayerMove: cell is occupied");
 
@@ -140,7 +196,7 @@ export function applyPlayerMove(
   let status = getStatus(afterPlayer);
   if (status !== "active") return { board: afterPlayer, status };
 
-  const computerCell = computeComputerMove(afterPlayer);
+  const computerCell = computeComputerMove(afterPlayer, difficulty, random);
   const afterComputer = afterPlayer.slice() as Mark[];
   afterComputer[computerCell] = COMPUTER;
 

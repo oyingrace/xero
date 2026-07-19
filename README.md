@@ -1,12 +1,12 @@
 # xero
 
-xero is tic-tac-toe against the computer, built as a [MiniPay](https://www.opera.com/products/minipay) Mini App on the [Celo](https://celo.org) blockchain. You're X, the computer is O, and every move is a real transaction against an on-chain opponent that plays perfect minimax — it can never be beaten, only drawn or lost to.
+xero is tic-tac-toe against the computer, built as a [MiniPay](https://www.opera.com/products/minipay) Mini App on the [Celo](https://celo.org) blockchain. You're X, the computer is O, and every move is a real transaction. Pick a difficulty before each game — Easy and Medium can be beaten, Hard cannot (see [Difficulty](#difficulty) below).
 
 ## Features
 
 - **MiniPay-native wallet** — runs inside MiniPay and uses the player's wallet automatically; a Connect Wallet fallback is available in a normal browser.
 - **On-chain gameplay** — each move is one signed transaction: the contract places your X, then immediately computes and places the computer's O reply and checks the outcome, all in the same call.
-- **Unbeatable opponent, by design** — the computer runs an exhaustive minimax search (not a heuristic shortcut), so there's no exploit to find.
+- **Three difficulties** — Easy (random), Medium (takes obvious wins/blocks, otherwise random), and Hard (exhaustive minimax — mathematically unbeatable).
 - **Demo mode** — without a deployed contract configured, the app runs the identical game engine locally, so it's fully playable during development.
 
 ## Tech stack
@@ -37,9 +37,23 @@ Open the app inside MiniPay (or MiniPay's Site Tester) to use the wallet flow. I
 
 xero runs inside the MiniPay dapp browser, which injects an EIP-1193 provider at `window.ethereum` (`isMiniPay === true`). On load the app auto-connects that wallet and identifies the player by their Celo address — there is no sign-up step.
 
-To play, the player calls `startGame()` on `TicTacToe.sol`, then `makeMove(gameId, cell)` for each move. The contract places the player's X, then — if the game continues — computes the computer's O reply with an on-chain minimax search and places it, returning the updated board and status in the same transaction. At most 5 signed transactions per game.
+To play, the player calls `startGame(difficulty)` on `TicTacToe.sol`, then `makeMove(gameId, cell)` for each move. The contract places the player's X, then — if the game continues — computes the computer's O reply and places it, returning the updated board and status in the same transaction. At most 5 signed transactions per game.
+
+**The player pays for all of it.** There's no separate "logging" transaction and the computer never submits its own transaction — every `makeMove` call already includes the computer's reply and the final outcome, so whoever's playing (win, lose, or draw) is the one whose wallet signs and pays gas for that move, same as any other Celo transaction.
 
 This is phase 1: **free play** — games are recorded on-chain but no token changes hands. A phase 2 will add USDT staking and automatic payout once stake tiers, payout multiplier, and treasury funding are decided; see [`contracts/README.md`](./contracts/README.md) for the design notes.
+
+## Difficulty
+
+Chosen once, when a game starts:
+
+| Difficulty | Behavior |
+| --- | --- |
+| Easy | Always a random empty cell. No strategy. |
+| Medium | Takes an immediate win or blocks an immediate loss; otherwise random. Has no deeper lookahead, so it can be forked and beaten. |
+| Hard | Exhaustive minimax search over the whole game tree. Mathematically guaranteed to never lose — the best a player can do is draw. |
+
+Tic-tac-toe is a "solved" game: with perfect play from both sides it always ends in a draw. Hard plays that perfect strategy, which is what makes it unbeatable — not a difficulty knob turned up, but an opponent that never makes a mistake to exploit. Easy and Medium are intentionally weaker so there's actually a game to win.
 
 ## Configuration
 
