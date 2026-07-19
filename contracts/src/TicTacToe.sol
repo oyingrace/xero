@@ -5,8 +5,7 @@ pragma solidity ^0.8.20;
  * @title TicTacToe
  * @notice On-chain tic-tac-toe against a computer opponent, for a MiniPay
  *         Mini App on Celo. The caller is X and always moves first; the
- *         contract plays O at one of three difficulties chosen when the
- *         game starts:
+ *         contract plays O at one of three difficulties:
  *
  *         - Hard: exhaustive minimax over the (tiny) game tree — the
  *           computer can never be beaten, only drawn or lost to.
@@ -14,24 +13,36 @@ pragma solidity ^0.8.20;
  *           otherwise plays a pseudo-random empty cell. Beatable.
  *         - Easy: always a pseudo-random empty cell. Beatable.
  *
- * @dev Phase 1: free play. Games are recorded on-chain but no token
- *      changes hands — `makeMove` does both halves of a round (the
- *      player's move and the computer's reply) in a single transaction,
- *      so the whole game is at most 5 signed transactions, all paid for
- *      by the player. A phase 2 contract will add USDT staking and
- *      automatic payout once the economics (stake tiers, payout
- *      multiplier, treasury funding) are decided; deliberately not built
- *      here to avoid guessing those numbers.
+ * @dev One transaction per game, submitted once the game is already over.
+ *      The player plays the whole game client-side first (an identical
+ *      engine lives at app/lib/game/engine.ts), then calls `playGame` with
+ *      every X move they made plus the random seed their client used for
+ *      Easy/Medium. The contract independently replays the entire game —
+ *      placing each X, then computing and placing each O reply itself —
+ *      and only that replay determines the recorded outcome. A player
+ *      can't fake a result: the move list alone lets anyone (including
+ *      this contract) reproduce and verify the whole game.
  *
- *      Easy/Medium's pseudo-randomness comes from `blockhash`/
- *      `block.timestamp`, which a block producer can bias. That's an
- *      acceptable trade for a free, casual difficulty tier, but revisit it
- *      before phase 2 wires up staked payouts on those tiers — Hard is
- *      unaffected since it never uses randomness.
+ *      This replaces an earlier design where every move was its own
+ *      transaction (`startGame` + repeated `makeMove` calls), which gave
+ *      real-time on-chain verification of each move but meant signing a
+ *      transaction per move. This version trades that away for a single
+ *      signature per game.
  *
- *      The TypeScript mirror of this exact algorithm lives at
- *      app/lib/game/engine.ts (used for the frontend's optimistic/local
- *      play) — keep the two in sync if either changes.
+ *      Easy/Medium's random fallback is seeded from the caller-supplied
+ *      `seed` (combined with the move index), not blockhash/timestamp —
+ *      that makes it exactly reproducible by the client ahead of
+ *      submission, so what the player saw while playing always matches
+ *      what gets recorded. The trade is that a player who tried different
+ *      seeds locally could pick a favorable one before submitting; that's
+ *      an acceptable trade since Easy/Medium are intentionally beatable
+ *      already. Hard is unaffected either way, since it never uses
+ *      randomness.
+ *
+ *      Free play: no token changes hands. A phase 2 contract will add
+ *      USDT staking and automatic payout once the economics (stake tiers,
+ *      payout multiplier, treasury funding) are decided; deliberately not
+ *      built here to avoid guessing those numbers.
  */
 contract TicTacToe {
     enum Status {
@@ -52,6 +63,9 @@ contract TicTacToe {
     uint8 internal constant PLAYER = 1;
     uint8 internal constant COMPUTER = 2;
 
+    /// @dev X moves first, so at most ceil(9/2) = 5 X moves can ever occur.
+    uint8 internal constant MAX_PLAYER_MOVES = 5;
+
     struct Game {
         address player;
         uint8[9] board;
@@ -62,55 +76,60 @@ contract TicTacToe {
     uint256 public nextGameId;
     mapping(uint256 => Game) private _games;
 
-    event GameStarted(uint256 indexed gameId, address indexed player, Difficulty difficulty);
-    event MoveMade(uint256 indexed gameId, uint8[9] board, Status status);
+    event GamePlayed(
+        uint256 indexed gameId,
+        address indexed player,
+        Difficulty difficulty,
+        uint256 seed,
+        uint8[] moves,
+        uint8[9] board,
+        Status status
+    );
 
-    error NotYourGame();
-    error GameNotActive();
+    error InvalidMoveCount();
     error InvalidCell();
     error CellOccupied();
-
-    /// @notice Opens a new game for the caller with an empty board.
-    function startGame(Difficulty difficulty) external returns (uint256 gameId) {
-        gameId = nextGameId++;
-        Game storage game = _games[gameId];
-        game.player = msg.sender;
-        game.status = Status.Active;
-        game.difficulty = difficulty;
-        emit GameStarted(gameId, msg.sender, difficulty);
-    }
+    error GameIncomplete();
 
     /**
-     * @notice Plays `cell` as X, then — if the game continues — plays the
-     *         computer's O reply and checks the outcome again. Returns and
-     *         emits the board state after both halves of the round.
+     * @notice Plays a full game of tic-tac-toe in one transaction and
+     *         records the result. `moves` is every cell the player (X)
+     *         played, in order; the contract computes every O reply
+     *         itself using `difficulty` and `seed`. Reverts unless `moves`
+     *         reaches a finished game (win, loss, or draw) — play to
+     *         completion locally before calling this.
      */
-    function makeMove(uint256 gameId, uint8 cell) external returns (uint8[9] memory board, Status status) {
-        Game storage game = _games[gameId];
-        if (game.player != msg.sender) revert NotYourGame();
-        if (game.status != Status.Active) revert GameNotActive();
-        if (cell >= 9) revert InvalidCell();
-        if (game.board[cell] != EMPTY) revert CellOccupied();
+    function playGame(Difficulty difficulty, uint256 seed, uint8[] calldata moves)
+        external
+        returns (uint256 gameId, uint8[9] memory board, Status status)
+    {
+        if (moves.length == 0 || moves.length > MAX_PLAYER_MOVES) revert InvalidMoveCount();
 
-        uint8[9] memory workingBoard = game.board;
-        workingBoard[cell] = PLAYER;
+        status = Status.Active;
+        for (uint8 i = 0; i < moves.length; i++) {
+            uint8 cell = moves[i];
+            if (cell >= 9) revert InvalidCell();
+            if (board[cell] != EMPTY) revert CellOccupied();
 
-        Status newStatus = _statusOf(workingBoard);
-        if (newStatus == Status.Active) {
-            uint8 computerCell = _bestMove(workingBoard, game.difficulty, gameId, cell);
-            workingBoard[computerCell] = COMPUTER;
-            newStatus = _statusOf(workingBoard);
+            board[cell] = PLAYER;
+            status = _statusOf(board);
+            if (status != Status.Active) break;
+
+            uint8 computerCell = _bestMove(board, difficulty, seed, i);
+            board[computerCell] = COMPUTER;
+            status = _statusOf(board);
+            if (status != Status.Active) break;
         }
 
-        game.board = workingBoard;
-        game.status = newStatus;
+        if (status == Status.Active) revert GameIncomplete();
 
-        board = workingBoard;
-        status = newStatus;
-        emit MoveMade(gameId, board, status);
+        gameId = nextGameId++;
+        _games[gameId] = Game({player: msg.sender, board: board, status: status, difficulty: difficulty});
+
+        emit GamePlayed(gameId, msg.sender, difficulty, seed, moves, board, status);
     }
 
-    /// @notice Reads back a game's player, board, status, and difficulty.
+    /// @notice Reads back a recorded game's player, board, status, and difficulty.
     function getGame(uint256 gameId)
         external
         view
@@ -149,9 +168,9 @@ contract TicTacToe {
     }
 
     /// @dev Picks the computer's (O's) move for the game's chosen difficulty.
-    function _bestMove(uint8[9] memory board, Difficulty difficulty, uint256 gameId, uint8 salt)
+    function _bestMove(uint8[9] memory board, Difficulty difficulty, uint256 seed, uint8 moveIndex)
         internal
-        view
+        pure
         returns (uint8)
     {
         if (difficulty == Difficulty.Hard) {
@@ -165,10 +184,8 @@ contract TicTacToe {
             if (mustBlock) return blockCell;
         }
 
-        uint256 seed = uint256(
-            keccak256(abi.encodePacked(blockhash(block.number - 1), block.timestamp, gameId, salt))
-        );
-        return _randomEmptyCell(board, seed);
+        uint256 randomSeed = uint256(keccak256(abi.encodePacked(seed, moveIndex)));
+        return _randomEmptyCell(board, randomSeed);
     }
 
     /// @dev The 8 winning lines, as cell-index triples.
